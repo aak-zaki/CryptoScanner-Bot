@@ -1,5 +1,4 @@
 import requests
-import time
 from config import BOT_TOKEN, CHAT_ID
 from coins import COINS
 
@@ -18,21 +17,18 @@ def fetch_technical_indicators(symbol, interval='1h'):
         price = closes[-1]
 
         return {'rsi': rsi, 'cci': cci, 'price': price}
-
     except Exception as e:
-        print(f"Error fetching data for {symbol}: {e}")
+        print(f"Error fetching data for {symbol} at {interval}: {e}")
         return None
 
 def calculate_rsi(closes, period=14):
-    gains = []
-    losses = []
+    gains, losses = [], []
     for i in range(1, period + 1):
         change = closes[-i] - closes[-i - 1]
         if change >= 0:
             gains.append(change)
         else:
             losses.append(abs(change))
-
     avg_gain = sum(gains) / period
     avg_loss = sum(losses) / period if losses else 0.0001
     rs = avg_gain / avg_loss
@@ -59,29 +55,31 @@ def send_telegram_message(message):
         print("Telegram exception:", e)
 
 def check_signals():
+    intervals = ['15m', '1h']  # Bisa tambahkan '4h', '1d' dsb.
     for symbol in COINS:
-        indicators = fetch_technical_indicators(symbol)
-        if not indicators:
-            continue
+        signals = []
+        for interval in intervals:
+            indicators = fetch_technical_indicators(symbol, interval=interval)
+            if not indicators:
+                continue
+            rsi = indicators['rsi']
+            cci = indicators['cci']
+            price = indicators['price']
+            signal = ""
+            if rsi < 30 and cci < -100:
+                signal = "BUY"
+            elif rsi > 70 and cci > 100:
+                signal = "SELL"
+            signals.append((interval, signal, rsi, cci, price))
 
-        rsi = indicators['rsi']
-        cci = indicators['cci']
-        price = indicators['price']
-        signal = ""
-
-        if rsi < 30 and cci < -100:
-            signal = "BUY"
-        elif rsi > 70 and cci > 100:
-            signal = "SELL"
-
-        if signal:
-            message = (
-                f"<b>{symbol}</b> - Signal <b>{signal}</b>\n"
-                f"Price: <code>{price}</code>\n"
-                f"RSI: <code>{rsi}</code>\n"
-                f"CCI: <code>{cci}</code>\n"
-                f"#CryptoScannerBot"
-            )
-            print(f"Sending {signal} signal for {symbol}")
+        valid_signals = [s[1] for s in signals if s[1]]
+        if len(valid_signals) == len(intervals) and len(set(valid_signals)) == 1:
+            final_signal = valid_signals[0]
+            message = f"<b>{symbol}</b> - Signal <b>{final_signal}</b>\n"
+            for interval, _, rsi, cci, price in signals:
+                message += f"[{interval}] Price: <code>{price}</code>, RSI: <code>{rsi}</code>, CCI: <code>{cci}</code>\n"
+            message += "#CryptoScannerBot"
+            print(f"Sending {final_signal} signal for {symbol}")
             send_telegram_message(message)
+
 
