@@ -1,43 +1,87 @@
 import requests
-import pandas as pd
+import time
+from config import BOT_TOKEN, CHAT_ID
 from coins import COINS
-from indicators import calculate_rsi, calculate_cci
-from notifier import send_telegram
-from config import GATE_API_URL
 
-def fetch_candles(symbol, interval='1h', limit=100):
-    params = {
-        'currency_pair': symbol.lower(),
-        'interval': interval,
-        'limit': limit
-    }
+def fetch_technical_indicators(symbol, interval='1h'):
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit=100"
     try:
-        res = requests.get(GATE_API_URL, params=params, timeout=10)
-        data = res.json()
-        df = pd.DataFrame(data, columns=[
-            'timestamp', 'volume', 'close', 'high', 'low', 'open'
-        ]).astype(float)
-        df = df.iloc[::-1]
-        df['close'] = df['close'].astype(float)
-        df['high'] = df['high'].astype(float)
-        df['low'] = df['low'].astype(float)
-        return df
+        response = requests.get(url, timeout=10)
+        data = response.json()
+        closes = [float(candle[4]) for candle in data]
+
+        if len(closes) < 20:
+            return None
+
+        rsi = calculate_rsi(closes)
+        cci = calculate_cci(data)
+        price = closes[-1]
+
+        return {'rsi': rsi, 'cci': cci, 'price': price}
+
     except Exception as e:
-        print(f"Error fetching {symbol}: {e}")
+        print(f"Error fetching data for {symbol}: {e}")
         return None
+
+def calculate_rsi(closes, period=14):
+    gains = []
+    losses = []
+    for i in range(1, period + 1):
+        change = closes[-i] - closes[-i - 1]
+        if change >= 0:
+            gains.append(change)
+        else:
+            losses.append(abs(change))
+
+    avg_gain = sum(gains) / period
+    avg_loss = sum(losses) / period if losses else 0.0001
+    rs = avg_gain / avg_loss
+    return round(100 - (100 / (1 + rs)), 2)
+
+def calculate_cci(data, period=20):
+    typical_prices = [(float(c[2]) + float(c[3]) + float(c[4])) / 3 for c in data[-period:]]
+    tp = typical_prices[-1]
+    ma = sum(typical_prices) / period
+    mean_deviation = sum([abs(tp_i - ma) for tp_i in typical_prices]) / period
+    if mean_deviation == 0:
+        return 0
+    cci = (tp - ma) / (0.015 * mean_deviation)
+    return round(cci, 2)
+
+def send_telegram_message(message):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
+    try:
+        response = requests.post(url, data=payload, timeout=10)
+        if response.status_code != 200:
+            print("Telegram error:", response.text)
+    except Exception as e:
+        print("Telegram exception:", e)
 
 def check_signals():
     for symbol in COINS:
-        df = fetch_candles(symbol)
-        if df is None or len(df) < 20:
+        indicators = fetch_technical_indicators(symbol)
+        if not indicators:
             continue
 
-        rsi = calculate_rsi(df['close']).iloc[-1]
-        cci = calculate_cci(df).iloc[-1]
+        rsi = indicators['rsi']
+        cci = indicators['cci']
+        price = indicators['price']
+        signal = ""
 
         if rsi < 30 and cci < -100:
-            signal = f"<b>BUY Signal</b> 🔼\nCoin: <b>{symbol}</b>\nRSI: <b>{rsi:.2f}</b>\nCCI: <b>{cci:.2f}</b>"
-            send_telegram(signal)
+            signal = "BUY"
         elif rsi > 70 and cci > 100:
-            signal = f"<b>SELL Signal</b> 🔽\nCoin: <b>{symbol}</b>\nRSI: <b>{rsi:.2f}</b>\nCCI: <b>{cci:.2f}</b>"
-            send_telegram(signal)
+            signal = "SELL"
+
+        if signal:
+            message = (
+                f"<b>{symbol}</b> - Signal <b>{signal}</b>\n"
+                f"Price: <code>{price}</code>\n"
+                f"RSI: <code>{rsi}</code>\n"
+                f"CCI: <code>{cci}</code>\n"
+                f"#CryptoScannerBot"
+            )
+            print(f"Sending {signal} signal for {symbol}")
+            send_telegram_message(message)
+
